@@ -8,28 +8,16 @@
 import 'dotenv/config';
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { z } from "zod";
 import { ZulipClient } from "./zulip/client.js";
-import { 
+import {
   ZulipConfig,
-  SendMessageSchema,
+  SearchUsersSchema,
   GetMessagesSchema,
-  UploadFileSchema,
-  EditMessageSchema,
-  AddReactionSchema,
-  RemoveReactionSchema,
-  CreateScheduledMessageSchema,
-  EditScheduledMessageSchema,
   GetUserByEmailSchema,
-  UpdateStatusSchema,
-  CreateDraftSchema,
-  EditDraftSchema,
   GetUserSchema,
   GetMessageSchema,
   GetMessageReadReceiptsSchema,
   ListUsersSchema,
-  ListStreamsSchema,
-  DeleteMessageSchema,
   GetStreamTopicsSchema,
   GetSubscribedStreamsSchema,
   GetStreamIdSchema,
@@ -83,28 +71,6 @@ function createErrorResponse(message: string) {
     }],
     isError: true
   };
-}
-
-/**
- * Validate email format for direct messages
- */
-function validateEmailList(emailString: string): { isValid: boolean; emails: string[] } {
-  const emails = emailString.split(',').map(email => email.trim());
-  const invalidEmails = emails.filter(email => !email.includes('@'));
-  
-  return {
-    isValid: invalidEmails.length === 0,
-    emails
-  };
-}
-
-/**
- * Filter out undefined values from an object
- */
-function filterUndefined<T extends Record<string, any>>(obj: T): Partial<T> {
-  return Object.fromEntries(
-    Object.entries(obj).filter(([_, value]) => value !== undefined)
-  ) as Partial<T>;
 }
 
 // Initialize Zulip client
@@ -326,14 +292,14 @@ Step 2: send-message with type="stream", to="general", topic="Hello", content="H
 
 // Register Tools
 
-// Helper tool for finding users - makes LLM usage much easier
+// Helper tool for finding users - makes LLM usage much easier.
+// @ts-expect-error TS2589: McpServer accumulates tool types across all registrations,
+// and with >10 tools the inferred type exceeds TS's depth limit. Runtime behaviour
+// is unaffected. Upstream tracking: modelcontextprotocol/typescript-sdk#390.
 server.tool(
   "search-users",
-  "🔍 DISCOVERY: Search for users by partial name or email when you don't know exact details. Use this first to explore and find users before sending direct messages. Returns multiple matching results with basic info (name, email, ID).",
-  {
-    query: z.string().describe("Name, email, or partial match to search for users"),
-    limit: z.number().default(10).describe("Maximum number of results to return (default: 10)")
-  },
+  "🔍 DISCOVERY: Search for users by partial name or email. Returns multiple matching results with basic info (name, email, ID).",
+  SearchUsersSchema.shape,
   async ({ query, limit }) => {
     try {
       const usersResponse = await zulipClient.getUsers();
@@ -380,49 +346,20 @@ server.tool(
       
       const info = {
         status: "✅ Connected to Zulip",
-        your_email: process.env.ZULIP_EMAIL,
-        zulip_url: process.env.ZULIP_URL,
         streams_available: streams.subscriptions?.length || 0,
         sample_streams: streams.subscriptions?.slice(0, 5).map((s: any) => s.name) || [],
         recent_activity: recentMessages.messages?.length > 0,
         quick_tips: [
-          "Use 'search-users' to find users before sending DMs",
-          "Stream names are case-sensitive - use exact names from get-subscribed-streams",
-          "Always include 'topic' when sending to streams",
-          "For DMs, use actual email addresses (not display names)",
-          "Note: 'streams' and 'channels' mean the same thing in Zulip"
+          "This is a read-only client — no message sending, editing, or reacting.",
+          "Use 'search-users' to find users by name or email.",
+          "Stream names are case-sensitive.",
+          "Use 'get-messages' with a 'narrow' filter to scope searches by stream, topic, sender, or keyword."
         ]
       };
       
       return createSuccessResponse(JSON.stringify(info, null, 2));
     } catch (error) {
       return createErrorResponse(`Connection test failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    }
-  }
-);
-
-server.tool(
-  "send-message",
-  "💬 SEND MESSAGE: Send a message to a Zulip stream (channel) or direct message to users. IMPORTANT: For streams use exact names from 'get-subscribed-streams'. For DMs use actual email addresses from 'search-users' tool (NOT display names). Always include 'topic' for stream messages.",
-  SendMessageSchema.shape,
-  async ({ type, to, content, topic }) => {
-    try {
-      if (type === 'stream' && !topic) {
-        return createErrorResponse('Topic is required for stream messages. Think of it as a subject line for your message.');
-      }
-
-      if (type === 'direct') {
-        const validation = validateEmailList(to);
-        if (!validation.isValid) {
-          return createErrorResponse(`Invalid email format for direct message recipients: ${to}. Use 'search-users' tool to find correct email addresses. Don't use display names.`);
-        }
-      }
-
-      const messageParams = { type, to, content, ...(topic && { topic }) };
-      const result = await zulipClient.sendMessage(messageParams);
-      return createSuccessResponse(`Message sent successfully! Message ID: ${result.id}`);
-    } catch (error) {
-      return createErrorResponse(`Error sending message: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }
 );
@@ -495,56 +432,6 @@ server.tool(
 );
 
 server.tool(
-  "edit-message",
-  "Edit an existing message's content or topic.",
-  EditMessageSchema.shape,
-  async ({ message_id, content, topic }) => {
-    try {
-      const updateParams = filterUndefined({ content, topic });
-      if (Object.keys(updateParams).length === 0) {
-        return createErrorResponse('At least one of content or topic must be provided for message update');
-      }
-      await zulipClient.updateMessage(message_id, updateParams);
-      return createSuccessResponse(`Message ${message_id} updated successfully!`);
-    } catch (error) {
-      return createErrorResponse(`Error updating message: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    }
-  }
-);
-
-server.tool(
-  "delete-message",
-  "Delete a message by its ID.",
-  DeleteMessageSchema.shape,
-  async ({ message_id }) => {
-    try {
-      await zulipClient.deleteMessage(message_id);
-      return createSuccessResponse(`Message ${message_id} deleted successfully!`);
-    } catch (error) {
-      return createErrorResponse(`Error deleting message: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    }
-  }
-);
-
-server.tool(
-  "add-emoji-reaction",
-  "Add an emoji reaction to a message.",
-  AddReactionSchema.shape,
-  async ({ message_id, emoji_name, emoji_code, reaction_type }) => {
-    try {
-      await zulipClient.addReaction(message_id, {
-        emoji_name,
-        emoji_code,
-        reaction_type
-      });
-      return createSuccessResponse(`Reaction ${emoji_name} added to message ${message_id}!`);
-    } catch (error) {
-      return createErrorResponse(`Error adding reaction: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    }
-  }
-);
-
-server.tool(
   "get-user-by-email",
   "📧 EXACT LOOKUP: Find a user when you have their exact email address. Use this when you know the specific email and need detailed profile information. Returns single user with complete details.",
   GetUserByEmailSchema.shape,
@@ -601,24 +488,6 @@ server.tool(
 );
 
 server.tool(
-  "upload-file",
-  "Upload a file or image to Zulip.",
-  UploadFileSchema.shape,
-  async ({ filename, content, content_type }) => {
-    try {
-      const result = await zulipClient.uploadFile(filename, content, content_type);
-      return createSuccessResponse(JSON.stringify({
-        success: true,
-        uri: result.uri,
-        message: `File uploaded successfully! Use this URI in messages: ${result.uri}`
-      }, null, 2));
-    } catch (error) {
-      return createErrorResponse(`Error uploading file: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    }
-  }
-);
-
-server.tool(
   "get-message-read-receipts",
   "Get list of users who have read a specific message.",
   GetMessageReadReceiptsSchema.shape,
@@ -632,123 +501,6 @@ server.tool(
       }, null, 2));
     } catch (error) {
       return createErrorResponse(`Error getting read receipts: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    }
-  }
-);
-
-server.tool(
-  "create-scheduled-message",
-  "Schedule a message to be sent at a future time. For direct messages, use comma-separated email addresses or get user info from the users-directory resource (zulip://users).",
-  CreateScheduledMessageSchema.shape,
-  async ({ type, to, content, topic, scheduled_delivery_timestamp }) => {
-    try {
-      const result = await zulipClient.createScheduledMessage({
-        type,
-        to,
-        content,
-        topic,
-        scheduled_delivery_timestamp
-      });
-      return createSuccessResponse(JSON.stringify({
-        success: true,
-        scheduled_message_id: result.scheduled_message_id,
-        delivery_time: new Date(scheduled_delivery_timestamp * 1000).toISOString(),
-        message: `Message scheduled successfully! ID: ${result.scheduled_message_id}`
-      }, null, 2));
-    } catch (error) {
-      return createErrorResponse(`Error creating scheduled message: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    }
-  }
-);
-
-server.tool(
-  "edit-scheduled-message",
-  "Modify a scheduled message before it's sent. For direct messages, use comma-separated email addresses or get user info from the users-directory resource (zulip://users).",
-  EditScheduledMessageSchema.shape,
-  async ({ scheduled_message_id, type, to, content, topic, scheduled_delivery_timestamp }) => {
-    try {
-      const updateParams = filterUndefined({
-        type,
-        to,
-        content,
-        topic,
-        scheduled_delivery_timestamp
-      });
-      if (Object.keys(updateParams).length === 0) {
-        return createErrorResponse('At least one parameter must be provided to update scheduled message');
-      }
-      await zulipClient.editScheduledMessage(scheduled_message_id, updateParams);
-      return createSuccessResponse(`Scheduled message ${scheduled_message_id} updated successfully!`);
-    } catch (error) {
-      return createErrorResponse(`Error editing scheduled message: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    }
-  }
-);
-
-server.tool(
-  "create-draft",
-  "📝 CREATE DRAFT: Save a message as draft for later editing or sending. For user IDs in the 'to' field, use search-users or get-users tool to discover available users and their IDs.",
-  CreateDraftSchema.shape,
-  async ({ type, to, topic, content, timestamp }) => {
-    try {
-      const result = await zulipClient.createDraft({
-        type,
-        to,
-        topic,
-        content,
-        timestamp
-      });
-      return createSuccessResponse(JSON.stringify({
-        success: true,
-        draft_ids: result.ids,
-        message: `Draft created successfully! IDs: ${result.ids.join(', ')}`
-      }, null, 2));
-    } catch (error) {
-      return createErrorResponse(`Error creating draft: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    }
-  }
-);
-
-server.tool(
-  "get-drafts",
-  "Retrieve all saved message drafts.",
-  {},
-  async () => {
-    try {
-      const result = await zulipClient.getDrafts();
-      return createSuccessResponse(JSON.stringify({
-        draft_count: result.drafts.length,
-        drafts: result.drafts.map(draft => ({
-          id: draft.id,
-          type: draft.type,
-          to: draft.to,
-          topic: draft.topic,
-          content: draft.content,
-          timestamp: new Date(draft.timestamp * 1000).toISOString()
-        }))
-      }, null, 2));
-    } catch (error) {
-      return createErrorResponse(`Error getting drafts: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    }
-  }
-);
-
-server.tool(
-  "edit-draft",
-  "Update an existing message draft. For user IDs in the 'to' field, use the users-directory resource (zulip://users) or get-users tool to discover available users and their IDs.",
-  EditDraftSchema.shape,
-  async ({ draft_id, type, to, topic, content, timestamp }) => {
-    try {
-      await zulipClient.editDraft(draft_id, {
-        type,
-        to,
-        topic,
-        content,
-        timestamp
-      });
-      return createSuccessResponse(`Draft ${draft_id} updated successfully!`);
-    } catch (error) {
-      return createErrorResponse(`Error editing draft: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }
 );
@@ -820,36 +572,6 @@ server.tool(
 );
 
 server.tool(
-  "update-status", 
-  "Update user status message with emoji and availability. Examples: Unicode emoji (emoji_name: 'coffee', emoji_code: '2615'), custom org emoji (reaction_type: 'realm_emoji'), or Zulip special emoji (reaction_type: 'zulip_extra_emoji').",
-  UpdateStatusSchema.shape,
-  async ({ status_text, away, emoji_name, emoji_code, reaction_type }) => {
-    try {
-      console.error('🔍 SERVER DEBUG - Raw parameters received:', { status_text, away, emoji_name, emoji_code, reaction_type });
-      
-      const updateParams = filterUndefined({
-        status_text,
-        away,
-        emoji_name,
-        emoji_code,
-        reaction_type
-      });
-      
-      console.error('🔍 SERVER DEBUG - After filterUndefined:', updateParams);
-      
-      if (Object.keys(updateParams).length === 0) {
-        return createErrorResponse('At least one parameter must be provided to update status');
-      }
-      
-      await zulipClient.updateStatus(updateParams);
-      return createSuccessResponse(`Status updated successfully!${status_text ? ` Message: "${status_text}"` : ''}${away !== undefined ? ` Away: ${away}` : ''}`);
-    } catch (error) {
-      return createErrorResponse(`Error updating status: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    }
-  }
-);
-
-server.tool(
   "get-user",
   "🆔 DETAILED LOOKUP: Get comprehensive user profile when you have their user ID (from search-users results). Returns complete user information including role, timezone, avatar, and custom profile fields.",
   GetUserSchema.shape,
@@ -909,24 +631,6 @@ server.tool(
       }, null, 2));
     } catch (error) {
       return createErrorResponse(`Error getting message: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    }
-  }
-);
-
-server.tool(
-  "remove-emoji-reaction",
-  "Remove an emoji reaction from a message.",
-  RemoveReactionSchema.shape,
-  async ({ message_id, emoji_name, emoji_code, reaction_type }) => {
-    try {
-      await zulipClient.removeReaction(message_id, {
-        emoji_name,
-        emoji_code,
-        reaction_type
-      });
-      return createSuccessResponse(`Reaction ${emoji_name} removed from message ${message_id}!`);
-    } catch (error) {
-      return createErrorResponse(`Error removing reaction: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }
 );

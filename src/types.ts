@@ -110,6 +110,11 @@ export interface ZulipDraft {
 }
 
 // MCP Tool Schemas
+export const SearchUsersSchema = z.object({
+  query: z.string().describe("Name, email, or partial match to search for users"),
+  limit: z.number().default(10).describe("Maximum number of results to return (default: 10)")
+});
+
 export const SendMessageSchema = z.object({
   type: z.enum(["stream", "direct"]).describe("'stream' for channel messages, 'direct' for private messages"),
   to: z.string().describe("For streams: channel name (e.g., 'general'). For direct: comma-separated user emails (e.g., 'user@example.com' or 'user1@example.com,user2@example.com')"),

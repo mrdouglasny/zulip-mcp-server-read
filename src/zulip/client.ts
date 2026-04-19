@@ -11,15 +11,14 @@ import {
 } from '../types.js';
 
 /**
- * Debug logging utility - only logs in development
+ * Debug logging utility - only logs in development.
+ * Writes to stderr so it does not corrupt the stdio MCP transport on stdout.
  */
 function debugLog(message: string, ...args: any[]) {
   if (process.env.NODE_ENV === 'development' || process.env.DEBUG === 'true') {
-    debugLog(message, ...args);
+    console.error(message, ...args);
   }
 }
-
-// Removed logger import - using console for debugging in development mode
 
 export class ZulipClient {
   private client: AxiosInstance;
@@ -27,6 +26,20 @@ export class ZulipClient {
 
   constructor(config: ZulipConfig) {
     this.config = config;
+
+    let parsed: URL;
+    try {
+      parsed = new URL(config.url);
+    } catch {
+      throw new Error(`ZULIP_URL is not a valid URL: ${config.url}`);
+    }
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+      throw new Error(`ZULIP_URL must be http(s): got ${parsed.protocol}`);
+    }
+    if (parsed.protocol === 'http:' && parsed.hostname !== 'localhost' && parsed.hostname !== '127.0.0.1') {
+      throw new Error(`ZULIP_URL uses http:// for non-local host ${parsed.hostname} — refusing to send Basic auth in the clear.`);
+    }
+
     this.client = axios.create({
       baseURL: `${config.url}/api/v1`,
       auth: {
@@ -37,7 +50,10 @@ export class ZulipClient {
         'Content-Type': 'application/json',
         'User-Agent': 'ZulipMCPServer/1.0.0'
       },
-      timeout: 30000
+      timeout: 30000,
+      maxRedirects: 0,
+      maxContentLength: 50 * 1024 * 1024,
+      maxBodyLength: 50 * 1024 * 1024
     });
 
     // Add response interceptor for error handling
