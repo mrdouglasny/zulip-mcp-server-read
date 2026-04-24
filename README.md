@@ -67,10 +67,23 @@ This MCP server uses "stream" to match Zulip's official documentation and API.
 
 ### Quick Start
 
+One-liner (clones, installs, builds, prints the MCP config to paste):
+
+```bash
+git clone https://github.com/mrdouglasny/zulip-mcp-server-read.git \
+  && cd zulip-mcp-server-read \
+  && ./install.sh
+```
+
+Then edit `.env` (created for you from `.env.example`) to add your
+`ZULIP_URL`, `ZULIP_EMAIL`, and `ZULIP_API_KEY`.
+
+Manual steps if you prefer:
+
 1. **Clone and install dependencies:**
 ```bash
-git clone <repository-url>
-cd zulip-mcp-server
+git clone https://github.com/mrdouglasny/zulip-mcp-server-read.git
+cd zulip-mcp-server-read
 npm install
 ```
 
